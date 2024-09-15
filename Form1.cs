@@ -1,4 +1,5 @@
 ﻿using System;
+using System.CodeDom;
 using System.Collections.Generic;
 using System.ComponentModel;
 using System.Data;
@@ -9,6 +10,8 @@ using System.Security;
 using System.Security.Cryptography;
 using System.Text;
 using System.Windows.Forms;
+using System.Threading;
+using ede;
 
 namespace EncryptionGUIwWindowsForms
 {
@@ -27,11 +30,12 @@ namespace EncryptionGUIwWindowsForms
         {
             completion["password"] = false;
             completion["type"] = false;
-            completion["input"] = false;
-            completion["output"] = false;
+            completion["oneInput"] = false;
+            completion["oneOutput"] = false;
+            completion["mulInput"] = false;
+            completion["mulOutput"] = false;
 
-            ReadSpeed.Minimum = 0;
-            ReadSpeed.Maximum = 1024;
+            completion["isMulFiles"] = false;
 
             CompletionChanged();
         }
@@ -54,37 +58,138 @@ namespace EncryptionGUIwWindowsForms
             {
                 StartStopButton.Text = "Stopping...";
                 StartStopButton.Enabled = false;
+                stopToolStripMenuItem.Enabled = false;
 
                 canceled = true;
-                while (canceled) ;
-
-                StartStopButton.Text = "Start";
-                StartStopButton.Enabled = true;
-
-                QuitButton.Enabled = true;
             }
             else
             {
                 StartStopButton.Text = "Stop";
+                stopToolStripMenuItem.Enabled = true;
+                startToolStripMenuItem.Enabled = false;
                 QuitButton.Enabled = false;
 
-                string inputFilename = InputFilePath.Text;
-                string outputFilename = OutputFilePath.Text;
-                string password = PasswordField.Text;
-                PasswordField.Text = ""; // clear password field
-                bool isOperationTypeEncryption = EncryptRadial.Checked;
-                byte[] passwordHash;
-
-                using (SHA256 passwordHasher = SHA256.Create())
+                if (InputOutputOptions.SelectedTab == OneFile)
                 {
-                    byte[] passwordBytes = Encoding.UTF8.GetBytes(password);
-                    passwordHash = passwordHasher.ComputeHash(passwordBytes);
-                    password = ""; // no prob after done with
-                }
+                    string[] inputFilename = new string[1];
+                    string[] outputFilename = new string [1];
+                    inputFilename[0] = InputFilePath.Text;
+                    outputFilename[0] = OutputFilePath.Text;
+                    string password = PasswordField.Text;
+                    PasswordField.Text = ""; // clear password field
+                    bool isOperationTypeEncryption = EncryptRadial.Checked;
+                    byte[] passwordHash;
 
-                AES256helper(inputFilename, outputFilename, isOperationTypeEncryption, passwordHash);
+                    using (SHA256 passwordHasher = SHA256.Create())
+                    {
+                        byte[] passwordBytes = Encoding.UTF8.GetBytes(password);
+                        passwordHash = passwordHasher.ComputeHash(passwordBytes);
+                        password = ""; // no prob after done with
+                    }
+
+                    //CancellationTokenSource source = new CancellationTokenSource();
+                    //var cancellationToken = cancellationTokenSource.Token;
+
+                    Thread thread = new Thread(() => ConsecutiveThreadManager(inputFilename, outputFilename, isOperationTypeEncryption, passwordHash));
+                    thread.Name = "ConsecutiveWriteManager";
+                    thread.Start();
+                }
+                else if(InputOutputOptions.SelectedTab == MultipleFiles)
+                {
+                    string[] inputFilenames = new string[MulInputFileListBox.Items.Count];
+                    string[] outputFilenames = new string[inputFilenames.Length];
+                    for (int i = 0; i < MulInputFileListBox.Items.Count; i++)
+                        inputFilenames[i] = MulInputFileListBox.Items[i].ToString();
+                    for(int i = 0; i < inputFilenames.Length; i++)
+                    {
+                        string[] splitPath = inputFilenames[i].Split('\\');
+                        string[] filenameParts = splitPath[splitPath.Length - 1].Split('.');
+                        string filename = "";
+                        if(!RemoveTopLevelExtension.Checked)
+                        {
+                            filenameParts[filenameParts.Length - 1] = "";
+                            for (int j = 0; j < filenameParts.Length - 3; j++)
+                                filename += filenameParts[j] + ".";
+                            filename += filenameParts[filenameParts.Length - 2];
+                        }
+                        else
+                        {
+                            filename += splitPath[splitPath.Length - 1];
+                            filename += "." + ExtensionBox.Text;
+                        }
+
+                        outputFilenames[i] = OutputFolderPath.Text + "\\" + filename;
+                    }
+
+                    string password = PasswordField.Text;
+                    PasswordField.Text = ""; // clear password field
+                    bool isOperationTypeEncryption = EncryptRadial.Checked;
+                    byte[] passwordHash;
+
+                    using (SHA256 passwordHasher = SHA256.Create())
+                    {
+                        byte[] passwordBytes = Encoding.UTF8.GetBytes(password);
+                        passwordHash = passwordHasher.ComputeHash(passwordBytes);
+                        password = ""; // no prob after done with
+                    }
+                    
+                    Thread thread = new Thread(() => ConsecutiveThreadManager(inputFilenames, outputFilenames, isOperationTypeEncryption, passwordHash));
+                    thread.Name = "ConsecutiveWriteManager";
+                    thread.Start();
+                }
             }
             hasOperationStarted = !hasOperationStarted;
+        }
+
+        private void ConsecutiveThreadManager(string[] inputFilename, string[] outputFilename, bool isOperationTypeEncryption, byte[] passwordHash)
+        {
+            PMultipleFileProgressBar.GetCurrentParent().Invoke((MethodInvoker)(() => PMultipleFileProgressBar.Minimum = 0));
+            PMultipleFileProgressBar.GetCurrentParent().Invoke((MethodInvoker)(() => PMultipleFileProgressBar.Maximum = inputFilename.Length * 2));
+            PMultipleFileProgressBar.GetCurrentParent().Invoke((MethodInvoker)(() => PMultipleFileProgressBar.Step = 1));
+            PMultipleFileProgressBar.GetCurrentParent().Invoke((MethodInvoker)(() => PMultipleFileProgressBar.Value = 0));
+
+            try
+            { 
+                for (int i = 0; i < Math.Min(inputFilename.Length, outputFilename.Length); i++)
+                {
+                    PMultipleFileProgressBar.GetCurrentParent().Invoke((MethodInvoker)(() => PMultipleFileProgressBar.PerformStep())); // half step
+                    Tried:
+                    try
+                    {
+                        AES256helper(inputFilename[i], outputFilename[i], isOperationTypeEncryption, passwordHash);
+                    }
+                    catch (OperationCanceledException)
+                    {
+                        throw new OperationCanceledException();
+                    }
+                    catch (Exception ex)
+                    {
+                        if (ex.Message == "Restart")
+                        {
+                            goto Tried; // restart the operation
+                        }
+                    }
+
+                    PMultipleFileProgressBar.GetCurrentParent().Invoke((MethodInvoker)(() => PMultipleFileProgressBar.PerformStep())); // full step
+                }
+            }
+            catch(OperationCanceledException)
+            {
+                statusLabel.GetCurrentParent().Invoke((MethodInvoker)(() => statusLabel.Text = "CANCELED."));
+                MessageBox.Show("Operation Canceled.", "Operation Stopped", MessageBoxButtons.OK, MessageBoxIcon.Information);
+                canceled = false;
+            }
+
+            // clean up
+            PCurrentFileProgress.GetCurrentParent().Invoke((MethodInvoker)(() => PCurrentFileProgress.Value = 0));
+            PMultipleFileProgressBar.GetCurrentParent().Invoke((MethodInvoker)(() => PMultipleFileProgressBar.Value = 0));
+            StartStopButton.Invoke((MethodInvoker)(() => StartStopButton.Text = "Start"));
+            hasOperationStarted = false; // done.
+            QuitButton.Invoke((MethodInvoker)(() => QuitButton.Enabled = true));
+            operationStripMenuItem.GetCurrentParent().Invoke((MethodInvoker)(() => startToolStripMenuItem.Enabled = true));
+            StartStopButton.Invoke((MethodInvoker)(() => CompletionChanged()));
+            statusLabel.GetCurrentParent().Invoke((MethodInvoker)(() => statusLabel.Text = "READY."));
+            MessageBox.Show("Operation complete.", "Operation Done", MessageBoxButtons.OK, MessageBoxIcon.Information);
         }
 
         private void QuitButton_Click(object sender, EventArgs e)
@@ -94,7 +199,7 @@ namespace EncryptionGUIwWindowsForms
 
         private void PasswordField_TextChanged(object sender, EventArgs e)
         {
-            if(PasswordField.Text != "")
+            if (PasswordField.Text != "")
                 completion["password"] = true;
             else
                 completion["password"] = false;
@@ -103,13 +208,13 @@ namespace EncryptionGUIwWindowsForms
 
         private void InputFilePath_DragEnter(object sender, DragEventArgs e)
         {
-            if(!e.Data.GetDataPresent(DataFormats.FileDrop))
+            if (!e.Data.GetDataPresent(DataFormats.FileDrop))
             {
                 e.Effect = DragDropEffects.None;
             }
             else
             {
-                if(((string[])e.Data.GetData(DataFormats.FileDrop)).Length == 1)
+                if (((string[])e.Data.GetData(DataFormats.FileDrop)).Length == 1)
                     e.Effect = DragDropEffects.Link;
             }
         }
@@ -121,7 +226,7 @@ namespace EncryptionGUIwWindowsForms
                 string[] files = (string[])e.Data.GetData(DataFormats.FileDrop);
                 InputFilePath.Text = files[0];
 
-                completion["input"] = true;
+                completion["oneInput"] = true;
                 CompletionChanged();
             }
         }
@@ -129,10 +234,10 @@ namespace EncryptionGUIwWindowsForms
         private void InputFilePicker_FileOk(object sender, CancelEventArgs e)
         {
             InputFilePath.Text = InputFilePicker.FileName;
-            completion["input"] = true;
+            completion["oneInput"] = true;
             if (!File.Exists(InputFilePicker.FileName))
             {
-                completion["input"] = false;
+                completion["oneInput"] = false;
                 InputFilePath.Text = "File does not exist.";
             }
             CompletionChanged();
@@ -141,8 +246,8 @@ namespace EncryptionGUIwWindowsForms
         private void OutputFilePicker_FileOk(object sender, CancelEventArgs e)
         {
             OutputFilePath.Text = OutputFilePicker.FileName;
-            completion["output"] = true;
-            
+            completion["oneOutput"] = true;
+
             CompletionChanged();
         }
 
@@ -165,52 +270,27 @@ namespace EncryptionGUIwWindowsForms
 
         private void CompletionChanged()
         {
-            if (completion["password"]
-             && completion["type"]
-             && completion["input"]
-             && completion["output"])
+            if (completion["password"] && completion["type"] && 
+                (completion["mulInput"] && completion["mulOutput"] && completion["isMulFiles"] || 
+                completion["oneInput"] && completion["oneOutput"] && !completion["isMulFiles"]))
             {
                 StartStopButton.Enabled = true;
+                startToolStripMenuItem.Enabled = true;
             }
             else if (StartStopButton.Text == "Start")
+            {
                 StartStopButton.Enabled = false;
-        }
-
-        private void updateTime(int ms, int bytes)
-        {
-            decimal msPmb;
-            try
-            {
-                msPmb = (decimal)(ms * (1048576 / bytes));
-            }
-            catch(DivideByZeroException)
-            {
-                msPmb = 0;
-            }
-            int sPmb = (int)Math.Floor(msPmb);
-            CurSpeedDataDisplay.Text = sPmb.ToString() + " MB/S";
-
-            if(sPmb > 1024)
-            {
-                ReadSpeed.Value = 1024;
-            }
-            else if(sPmb < 0)
-            {
-                //throw new ArgumentOutOfRangeException();
-                ReadSpeed.Value = 512;
-            }
-            else
-            {
-                ReadSpeed.Value = sPmb;
+                startToolStripMenuItem.Enabled = false;
             }
         }
 
-        private void AES256helper(string inputFilename, string outputFilename, bool isOperationTypeEncryption, byte[] passwordHash)
+        private void AES256helper(string inputFilename, string outputFilename, bool isOperationTypeEncryption, byte[] passwordHash, bool isConsecutive = false)
         {
             byte[] key = new byte[32]; // 256 bits key
             byte[] iv = new byte[16];  // 128 bits IV (AES block size)
 
-            statusLabel.Text = "BUSY.";
+            // Update statusLabel on the UI thread
+            statusLabel.GetCurrentParent().Invoke((MethodInvoker)(() => statusLabel.Text = "BUSY."));
 
             Array.Copy(passwordHash, key, key.Length); // Use the first 32 bytes for the key
 
@@ -226,13 +306,14 @@ namespace EncryptionGUIwWindowsForms
                 {
                     if (File.Exists(outputFilename))
                     {
-                        statusLabel.Text = "COMFIRMATION.";
+                        statusLabel.GetCurrentParent().Invoke((MethodInvoker)(() => statusLabel.Text = "CONFIRMATION."));
                         DialogResult result = MessageBox.Show($"The file at ({outputFilename}), already exists. Do you want to overwrite it?", "Overwrite File?",
-                                              MessageBoxButtons.YesNoCancel, MessageBoxIcon.Question);
+                                              MessageBoxButtons.YesNoCancel, MessageBoxIcon.Warning);
 
                         if (result == DialogResult.No || result == DialogResult.Cancel)
                             throw new OperationCanceledException();
-                        statusLabel.Text = "BUSY.";
+
+                        statusLabel.GetCurrentParent().Invoke((MethodInvoker)(() => statusLabel.Text = "BUSY."));
                     }
 
                     if (isOperationTypeEncryption)
@@ -256,21 +337,17 @@ namespace EncryptionGUIwWindowsForms
                             {
                                 using (FileStream fsInput = new FileStream(inputFilename, FileMode.Open))
                                 {
-                                    byte[] buffer = new byte[1048576];
-                                    int bytesRead;
-                                    Stopwatch stopwatch = Stopwatch.StartNew();
-
-                                    while ((bytesRead = fsInput.Read(buffer, 0, buffer.Length)) > 0)
+                                    using (ProgressStream progressStream = new ProgressStream(fsInput))
                                     {
-                                        stopwatch.Start();
-                                        // Write encrypted data
-                                        cs.Write(buffer, 0, bytesRead);
+                                        progressStream.UpdateProgress += updateProgress;
+                                        byte[] buffer = new byte[1048576];
+                                        int bytesRead;
 
-                                        // Measure performance
-                                        stopwatch.Stop();
-                                        int elapsedMS = (int)stopwatch.Elapsed.TotalMilliseconds;
-                                        updateTime(elapsedMS, bytesRead); // Replace with actual performance reporting
-                                        stopwatch.Reset();
+                                        while ((bytesRead = progressStream.Read(buffer, 0, buffer.Length)) > 0)
+                                        {
+                                            cs.Write(buffer, 0, bytesRead);
+                                            if (canceled) throw new OperationCanceledException();
+                                        }
                                     }
                                 }
                             }
@@ -291,22 +368,18 @@ namespace EncryptionGUIwWindowsForms
                             {
                                 using (FileStream fsOutput = new FileStream(outputFilename, FileMode.Create))
                                 {
-                                    byte[] buffer = new byte[1048576];
-                                    int bytesRead;
-                                    Stopwatch stopwatch = Stopwatch.StartNew();
-
-                                    while ((bytesRead = cs.Read(buffer, 0, buffer.Length)) > 0)
+                                    using (ProgressStream progressStream = new ProgressStream(cs))
                                     {
-                                        stopwatch.Start();
+                                        progressStream.UpdateProgress += updateProgress;
+                                        byte[] buffer = new byte[1048576];
+                                        int bytesRead;
 
-                                        // Write decrypted data
-                                        fsOutput.Write(buffer, 0, bytesRead);
-
-                                        // Measure performance
-                                        stopwatch.Stop();
-                                        int elapsedMS = (int)stopwatch.Elapsed.TotalMilliseconds;
-                                        updateTime(elapsedMS, bytesRead); // Replace with actual performance reporting
-                                        stopwatch.Reset();
+                                        while ((bytesRead = progressStream.Read(buffer, 0, buffer.Length)) > 0)
+                                        {
+                                            // Write decrypted data
+                                            fsOutput.Write(buffer, 0, bytesRead);
+                                            if (canceled) throw new OperationCanceledException();
+                                        }
                                     }
                                 }
                             }
@@ -315,34 +388,133 @@ namespace EncryptionGUIwWindowsForms
                 }
                 catch (OperationCanceledException)
                 {
-                    statusLabel.Text = "CANCELED.";
-                    MessageBox.Show("Operation Canceled.", "Operation Stopped", MessageBoxButtons.OK, MessageBoxIcon.Information);
+                    throw new OperationCanceledException();
                 }
                 catch (CryptographicException e)
                 {
-                    statusLabel.Text = "ERROR.";
-                    StartStopButton.Enabled = false;
-                    StartStopButton.Text = "ERROR";
-                    MessageBox.Show($"{e.Message} \n\nCauses include\nThe password is wrong.\n>The input file is corrupted.\n>(Rarely) This program has a bug.", "AES256helper Error (Cryptographic)", MessageBoxButtons.OK, MessageBoxIcon.Stop);
-                    StartStopButton.Enabled = true;
+                    statusLabel.GetCurrentParent().Invoke((MethodInvoker)(() => statusLabel.Text = "ERROR."));
+                    StartStopButton.Invoke((MethodInvoker)(() => {
+                        StartStopButton.Enabled = false;
+                        StartStopButton.Text = "ERROR";
+                    }));
+                    DialogResult result = MessageBox.Show($"{e.Message} \n\nCauses include\nThe password is wrong.\n>The input file is corrupted.\n>(Rarely) This program has a bug.", "AES256helper Error (Cryptographic)", 
+                        MessageBoxButtons.AbortRetryIgnore, MessageBoxIcon.Stop);
+                    if (result == DialogResult.Abort)
+                    {
+                        throw new OperationCanceledException();
+                    }
+                    else if (result == DialogResult.Retry)
+                    {
+                        throw new Exception("Restart");
+                    }
+                    StartStopButton.Invoke((MethodInvoker)(() => {
+                        StartStopButton.Enabled = true;
+                        StartStopButton.Text = "Stop";
+                    }));
                 }
                 catch (Exception e)
                 {
-                    statusLabel.Text = "ERROR.";
-                    StartStopButton.Enabled = false;
-                    StartStopButton.Text = "ERROR";
-                    MessageBox.Show(e.Message, "AES256helper Error", MessageBoxButtons.OK, MessageBoxIcon.Stop);
-                    StartStopButton.Enabled = true;
-                }
-                finally
-                {
-                    StartStopButton.Text = "Start";
-                    hasOperationStarted = false; // done.
-                    QuitButton.Enabled = true;
-                    CompletionChanged();
-                    statusLabel.Text = "READY.";
+                    statusLabel.GetCurrentParent().Invoke((MethodInvoker)(() => statusLabel.Text = "ERROR."));
+                    StartStopButton.Invoke((MethodInvoker)(() => {
+                        StartStopButton.Enabled = false;
+                        StartStopButton.Text = "ERROR";
+                    }));
+                    DialogResult result = MessageBox.Show(e.Message, "Error", 
+                        MessageBoxButtons.AbortRetryIgnore, MessageBoxIcon.Stop);
+                    if (result == DialogResult.Abort)
+                    {
+                        throw new OperationCanceledException();
+                    }
+                    else if (result == DialogResult.Retry)
+                    {
+                        throw new Exception("Restart");
+                    }
+                    StartStopButton.Invoke((MethodInvoker)(() => {
+                        StartStopButton.Enabled = true;
+                        StartStopButton.Text = "Stop";
+                    }));
                 }
             }
+        }
+
+        private void AboutButton_Click(object sender, EventArgs e)
+        {
+            AboutBox1 AboutBox = new AboutBox1();
+            AboutBox.ShowDialog();
+        }
+
+        private void RemoveTopLevelExtension_CheckedChanged(object sender, EventArgs e)
+        {
+            if (RemoveTopLevelExtension.Checked == false)
+                ExtensionBox.Enabled = false;
+            else ExtensionBox.Enabled = true;
+        }
+
+        // Multiple Selection Section
+
+        private void FolderSelectionButton_Click(object sender, EventArgs e)
+        {
+            DialogResult result = FolderSelection.ShowDialog();
+            if (result == DialogResult.OK)
+            {
+                OutputFolderPath.Text = FolderSelection.SelectedPath;
+                completion["mulOutput"] = true;
+            }
+        }
+
+        private void MulInputFiles_FileOk(object sender, CancelEventArgs e)
+        {
+            string[] added = MulInputFiles.FileNames;
+            for(int i = 0; i < added.Length; i++)
+            {
+                if (!MulInputFileListBox.Items.Contains(added[i]))
+                    MulInputFileListBox.Items.Add(added[i]);
+            }
+
+            completion["mulInput"] = true;
+            CompletionChanged();
+        }
+
+        private void AddMulFiles_Click(object sender, EventArgs e)
+        {
+            MulInputFiles.ShowDialog();
+        }
+
+        private void MulInputFileListBox_SelectedIndexChanged(object sender, EventArgs e)
+        {
+            if(MulInputFileListBox.SelectedItems.Count > 0) RemoveFilesButton.Enabled = true;
+            else RemoveFilesButton.Enabled = false;
+        }
+
+        private void RemoveFilesButton_Click(object sender, EventArgs e)
+        {
+            for(int i = 0; i < MulInputFileListBox.SelectedItems.Count; i++)
+            {
+                MulInputFileListBox.Items.Remove(MulInputFileListBox.SelectedItems[i]);
+            }
+
+            if(MulInputFileListBox.Items.Count == 0)
+            {
+                completion["mulInput"] = false;
+                CompletionChanged();
+            }
+        }
+
+        private void InputOutputOptions_Selected(object sender, TabControlEventArgs e)
+        {
+            if (InputOutputOptions.SelectedTab == MultipleFiles)
+                completion["isMulFiles"] = true;
+            else if (InputOutputOptions.SelectedTab == OneFile)
+                completion["isMulFiles"] = false;
+            else
+                throw new NotImplementedException();
+            CompletionChanged();
+        }
+        private void updateProgress(object sender, ProgressEventArgs e)
+        {
+            int progressPercent = (int)(e.Progress * 100.0f);
+            PCurrentFileProgress.GetCurrentParent().Invoke((MethodInvoker)(() => PCurrentFileProgress.Value = progressPercent));
+            PSpeedLabel.GetCurrentParent().Invoke((MethodInvoker)(() => PSpeedLabel.Text = e.BPS + " B/S"));
         }
     }
 }
