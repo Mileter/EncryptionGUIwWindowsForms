@@ -11,7 +11,7 @@ using System.Runtime.InteropServices;
 [assembly: AssemblyConfiguration("")]
 [assembly: AssemblyCompany("Mileter")]
 [assembly: AssemblyProduct("Encryption Applet Demo")]
-[assembly: AssemblyCopyright("Copyright (c) 2004")]
+[assembly: AssemblyCopyright("Copyright (c) 2024")]
 [assembly: AssemblyTrademark("")]
 [assembly: AssemblyCulture("")]
 
