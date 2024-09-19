@@ -34,7 +34,6 @@ namespace EncryptionGUIwWindowsForms
             completion["oneOutput"] = false;
             completion["mulInput"] = false;
             completion["mulOutput"] = false;
-
             completion["isMulFiles"] = false;
 
             CompletionChanged();
